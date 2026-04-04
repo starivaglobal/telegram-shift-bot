@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import requests
 import threading
 import time
-from flask import Flask
+from flask import Flask, Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,21 +18,28 @@ if not TOKEN:
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 DATA_FILE = "shifts.json"
 
-# Create Flask app for health check
-flask_app = Flask(__name__)
+# Create Flask app
+app = Flask(__name__)
 
-@flask_app.route('/')
-@flask_app.route('/health')
-@flask_app.route('/healthcheck')
+# Health check endpoints - multiple paths for compatibility
+@app.route('/')
+@app.route('/health')
+@app.route('/healthcheck')
+@app.route('/ping')
 def health_check():
     """Health check endpoint for Render and UptimeRobot"""
     return "OK", 200
 
+@app.route('/status')
+def status():
+    """Status endpoint"""
+    return "Bot is running", 200
+
 def run_web_server():
-    """Run Flask web server in a separate thread"""
+    """Run Flask web server"""
     port = int(os.environ.get("PORT", 10000))
     logger.info(f"Starting web server on port {port}")
-    flask_app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 def load_data():
     try:
@@ -46,7 +53,7 @@ def save_data(data):
         json.dump(data, f)
 
 def get_display_name(user):
-    """Extract display name from user object with priority: Full Name > Username > User ID"""
+    """Extract display name from user object"""
     first_name = user.get("first_name", "")
     last_name = user.get("last_name", "")
     username = user.get("username", "")
@@ -67,7 +74,9 @@ def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
     data = {"chat_id": chat_id, "text": text}
     try:
-        requests.post(url, json=data)
+        response = requests.post(url, json=data)
+        if response.status_code != 200:
+            logger.error(f"Failed to send message: {response.text}")
     except Exception as e:
         logger.error(f"Error sending message: {e}")
 
@@ -290,7 +299,11 @@ def main():
     web_thread = threading.Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
+    
+    # Wait a moment for the web server to start
+    time.sleep(2)
     logger.info(f"✅ HTTP server started on port {os.environ.get('PORT', 10000)}")
+    logger.info(f"✅ Health check available at /health, /healthcheck, /ping, /status")
     
     # Run bot (this blocks the main thread)
     run_bot()
