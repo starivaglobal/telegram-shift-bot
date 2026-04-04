@@ -5,42 +5,39 @@ from datetime import datetime, timedelta
 import requests
 import threading
 import time
-from flask import Flask, Response
+from flask import Flask
 
+# --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    logger.error("NO TOKEN FOUND!")
+    logger.error("NO TOKEN FOUND! Make sure TELEGRAM_BOT_TOKEN is set in Render environment variables.")
     exit(1)
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 DATA_FILE = "shifts.json"
 
-# Create Flask app
-app = Flask(__name__)
+# --- Flask Web Server for Health Checks ---
+flask_app = Flask(__name__)
 
-# Health check endpoints - multiple paths for compatibility
-@app.route('/')
-@app.route('/health')
-@app.route('/healthcheck')
-@app.route('/ping')
+@flask_app.route('/')
+@flask_app.route('/health')
+@flask_app.route('/healthcheck')
+@flask_app.route('/ping')
 def health_check():
     """Health check endpoint for Render and UptimeRobot"""
     return "OK", 200
 
-@app.route('/status')
-def status():
-    """Status endpoint"""
-    return "Bot is running", 200
-
 def run_web_server():
-    """Run Flask web server"""
+    """Starts the Flask web server in a separate thread"""
     port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting web server on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    logger.info(f"Starting Flask web server on port {port}")
+    # Run Flask with debug=False and without the reloader to avoid issues
+    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
+# --- Bot Logic (Your Existing Functions) ---
 def load_data():
     try:
         with open(DATA_FILE, 'r') as f:
@@ -53,41 +50,32 @@ def save_data(data):
         json.dump(data, f)
 
 def get_display_name(user):
-    """Extract display name from user object"""
     first_name = user.get("first_name", "")
     last_name = user.get("last_name", "")
     username = user.get("username", "")
     user_id = user.get("id", "")
     
     if first_name:
-        if last_name:
-            return f"{first_name} {last_name}"
-        else:
-            return first_name
+        return f"{first_name} {last_name}" if last_name else first_name
     elif username:
         return f"@{username}"
     else:
         return str(user_id)
 
 def send_message(chat_id, text):
-    """Send a message to a Telegram user"""
     url = f"{BASE_URL}/sendMessage"
-    data = {"chat_id": chat_id, "text": text}
     try:
-        response = requests.post(url, json=data)
-        if response.status_code != 200:
-            logger.error(f"Failed to send message: {response.text}")
+        requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
         logger.error(f"Error sending message: {e}")
 
 def get_updates(offset=None):
-    """Get new updates from Telegram"""
     url = f"{BASE_URL}/getUpdates"
     params = {"timeout": 30}
     if offset:
         params["offset"] = offset
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=35)
         return response.json().get("result", [])
     except Exception as e:
         logger.error(f"Error getting updates: {e}")
@@ -105,45 +93,33 @@ def handle_start(chat_id, user_name):
 /my_shifts - Мои смены
 /cancel ГГГГ-ММ-ДД 1|2 - Отменить запись
 
-📌 Пример: /shift 2026-05-01 1
-
-Хорошего дня! ☀️"""
+📌 Пример: /shift 2026-05-01 1"""
     send_message(chat_id, welcome)
 
 def handle_week(chat_id):
     data = load_data()
     today = datetime.now().date()
     weekdays_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    
     msg = "📅 **Расписание смен на следующую неделю:**\n\n"
     
     for i in range(7):
         date = today + timedelta(days=i)
         date_str = date.strftime("%Y-%m-%d")
         weekday = weekdays_ru[date.weekday()]
-        
         shifts = data["shifts"].get(date_str, {"first": [], "second": []})
         
-        first_list = shifts['first'] if shifts['first'] else ["— Никто не записан —"]
-        second_list = shifts['second'] if shifts['second'] else ["— Никто не записан —"]
-        
-        first = ', '.join(first_list)
-        second = ', '.join(second_list)
-        
-        msg += f"*{weekday} ({date_str})*\n"
-        msg += f"🌅 Первая смена (9:30-16:30): {first}\n"
-        msg += f"🌙 Вторая смена (16:00-23:00): {second}\n\n"
+        first = ', '.join(shifts['first']) if shifts['first'] else "— Никто не записан —"
+        second = ', '.join(shifts['second']) if shifts['second'] else "— Никто не записан —"
+        msg += f"*{weekday} ({date_str})*\n🌅 Первая смена: {first}\n🌙 Вторая смена: {second}\n\n"
     
     send_message(chat_id, msg)
 
 def handle_shift(chat_id, args, user):
     if len(args) != 2:
-        send_message(chat_id, "📝 Использование: /shift ГГГГ-ММ-ДД 1|2\n\nПример: /shift 2026-05-01 1")
+        send_message(chat_id, "Использование: /shift ГГГГ-ММ-ДД 1|2")
         return
     
-    date_str = args[0]
-    shift_num = args[1]
-    
+    date_str, shift_num = args[0], args[1]
     display_name = get_display_name(user)
     
     try:
@@ -152,14 +128,14 @@ def handle_shift(chat_id, args, user):
             send_message(chat_id, "❌ Нельзя записаться на прошедшую дату!")
             return
         if shift_date > datetime.now().date() + timedelta(days=7):
-            send_message(chat_id, "❌ Записывайтесь только на следующую неделю (максимум 7 дней вперёд)!")
+            send_message(chat_id, "❌ Записывайтесь только на следующую неделю!")
             return
     except ValueError:
-        send_message(chat_id, "❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД\n\nПример: /shift 2026-05-01 1")
+        send_message(chat_id, "❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД")
         return
     
     if shift_num not in ["1", "2"]:
-        send_message(chat_id, "❌ Смена должна быть 1 (первая) или 2 (вторая)")
+        send_message(chat_id, "❌ Смена должна быть 1 или 2")
         return
     
     data = load_data()
@@ -174,7 +150,7 @@ def handle_shift(chat_id, args, user):
         shift_name = "первую смену (9:30-16:30)" if shift_num == "1" else "вторую смену (16:00-23:00)"
         send_message(chat_id, f"✅ {display_name}, вы записаны на {shift_name} на {date_str}")
     else:
-        send_message(chat_id, f"❌ {display_name}, вы уже записаны на эту смену на {date_str}!")
+        send_message(chat_id, f"❌ {display_name}, вы уже записаны на эту смену!")
 
 def handle_my_shifts(chat_id, user):
     display_name = get_display_name(user)
@@ -194,21 +170,17 @@ def handle_my_shifts(chat_id, user):
             pass
     
     if my_list:
-        msg = "📋 **Ваши предстоящие смены:**\n\n" + "\n".join(my_list)
+        send_message(chat_id, "📋 **Ваши смены:**\n\n" + "\n".join(my_list))
     else:
-        msg = "📋 У вас нет запланированных смен."
-    
-    send_message(chat_id, msg)
+        send_message(chat_id, "📋 У вас нет запланированных смен.")
 
 def handle_cancel(chat_id, args, user):
     if len(args) != 2:
-        send_message(chat_id, "📝 Использование: /cancel ГГГГ-ММ-ДД 1|2\n\nПример: /cancel 2026-05-01 1")
+        send_message(chat_id, "Использование: /cancel ГГГГ-ММ-ДД 1|2")
         return
     
-    date_str = args[0]
-    shift_num = args[1]
+    date_str, shift_num = args[0], args[1]
     display_name = get_display_name(user)
-    
     data = load_data()
     key = "first" if shift_num == "1" else "second"
     
@@ -218,41 +190,18 @@ def handle_cancel(chat_id, args, user):
         shift_name = "первой смены" if shift_num == "1" else "второй смены"
         send_message(chat_id, f"✅ {display_name}, вы отменены от {shift_name} на {date_str}")
     else:
-        send_message(chat_id, f"❌ {display_name}, вы не записаны на эту смену на {date_str}!")
-
-def handle_help(chat_id):
-    help_text = """📋 **Команды бота управления сменами**
-
-/start - Показать приветствие
-/week - Расписание на следующую неделю
-/shift ГГГГ-ММ-ДД 1 - Записаться на первую смену (9:30-16:30)
-/shift ГГГГ-ММ-ДД 2 - Записаться на вторую смену (16:00-23:00)
-/my_shifts - Показать мои смены
-/cancel ГГГГ-ММ-ДД 1|2 - Отменить запись на смену
-/help - Показать эту справку
-
-📌 **Формат даты:** ГГГГ-ММ-ДД (например, 2026-05-01)
-
-Примеры:
-/shift 2026-05-01 1 - Запись на первую смену 1 мая
-/cancel 2026-05-01 1 - Отмена с первой смены 1 мая"""
-    
-    send_message(chat_id, help_text)
+        send_message(chat_id, f"❌ {display_name}, вы не записаны на эту смену.")
 
 def process_update(update):
     try:
         message = update.get("message")
-        if not message:
-            return
-        
+        if not message: return
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
-        
         user = message.get("from", {})
         user_name = user.get("first_name", "")
         
-        if not text.startswith("/"):
-            return
+        if not text.startswith("/"): return
         
         parts = text.split()
         command = parts[0].lower()
@@ -268,18 +217,14 @@ def process_update(update):
             handle_my_shifts(chat_id, user)
         elif command == "/cancel":
             handle_cancel(chat_id, args, user)
-        elif command == "/help":
-            handle_help(chat_id)
         else:
-            send_message(chat_id, "❌ Неизвестная команда. Используйте /help для списка команд.")
+            send_message(chat_id, "❌ Неизвестная команда. Используйте /help")
     except Exception as e:
         logger.error(f"Error processing update: {e}")
 
 def run_bot():
-    """Run the bot's polling loop"""
-    logger.info("🤖 Starting bot polling loop...")
+    logger.info("🤖 Bot polling loop started...")
     last_update_id = 0
-    
     while True:
         try:
             updates = get_updates(last_update_id + 1)
@@ -288,25 +233,19 @@ def run_bot():
                 last_update_id = update["update_id"]
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
-        
         time.sleep(1)
 
-def main():
-    """Main function - starts both web server and bot"""
-    logger.info("🤖 Starting shift bot with HTTP server...")
+# --- Main Execution ---
+if __name__ == "__main__":
+    logger.info("🚀 Starting Shift Bot with Health Check Server...")
     
-    # Start Flask web server in a background thread
-    web_thread = threading.Thread(target=run_web_server)
-    web_thread.daemon = True
+    # 1. Start the Flask web server in a background thread
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
-    # Wait a moment for the web server to start
+    # 2. Wait a moment for the web server to initialize
     time.sleep(2)
-    logger.info(f"✅ HTTP server started on port {os.environ.get('PORT', 10000)}")
-    logger.info(f"✅ Health check available at /health, /healthcheck, /ping, /status")
+    logger.info(f"✅ Health check available at: https://telegram-shift-bot.onrender.com/health")
     
-    # Run bot (this blocks the main thread)
+    # 3. Start the bot's polling loop (this runs forever)
     run_bot()
-
-if __name__ == "__main__":
-    main()
