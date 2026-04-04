@@ -3,7 +3,9 @@ import json
 import logging
 from datetime import datetime, timedelta
 import requests
+import threading
 import time
+from flask import Flask
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,6 +18,24 @@ if not TOKEN:
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 DATA_FILE = "shifts.json"
 
+# Track processed updates to prevent duplicates
+PROCESSED_UPDATES = set()
+MAX_PROCESSED_SIZE = 1000
+
+# --- Flask Health Check Server ---
+app = Flask(__name__)
+
+@app.route('/')
+@app.route('/health')
+@app.route('/healthcheck')
+def health():
+    return "OK", 200
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# --- Bot Functions ---
 def load_data():
     try:
         with open(DATA_FILE, 'r') as f:
@@ -49,11 +69,11 @@ def send_message(chat_id, text):
 
 def get_updates(offset=None):
     url = f"{BASE_URL}/getUpdates"
-    params = {"timeout": 30}
+    params = {"timeout": 25}
     if offset:
         params["offset"] = offset
     try:
-        response = requests.get(url, params=params, timeout=35)
+        response = requests.get(url, params=params, timeout=30)
         return response.json().get("result", [])
     except Exception as e:
         logger.error(f"Error getting updates: {e}")
@@ -71,7 +91,7 @@ def handle_start(chat_id, user_name):
 /my_shifts - Мои смены
 /cancel ГГГГ-ММ-ДД 1|2 - Отменить запись
 
-Пример: /shift 2026-05-01 1"""
+Пример: /shift 2026-05-10 1"""
     send_message(chat_id, welcome)
 
 def handle_week(chat_id):
@@ -172,14 +192,35 @@ def handle_cancel(chat_id, args, user):
 
 def process_update(update):
     try:
+        # Get unique update ID
+        update_id = update.get("update_id")
+        
+        # Check if we already processed this update
+        if update_id in PROCESSED_UPDATES:
+            logger.info(f"Skipping duplicate update {update_id}")
+            return
+        
+        # Mark as processed
+        PROCESSED_UPDATES.add(update_id)
+        
+        # Keep the set from growing too large
+        if len(PROCESSED_UPDATES) > MAX_PROCESSED_SIZE:
+            # Remove oldest 200 entries
+            to_remove = list(PROCESSED_UPDATES)[:200]
+            for old_id in to_remove:
+                PROCESSED_UPDATES.discard(old_id)
+        
         message = update.get("message")
-        if not message: return
+        if not message:
+            return
+        
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
         user = message.get("from", {})
         user_name = user.get("first_name", "")
         
-        if not text.startswith("/"): return
+        if not text.startswith("/"):
+            return
         
         parts = text.split()
         command = parts[0].lower()
@@ -203,16 +244,31 @@ def process_update(update):
 def run_bot():
     logger.info("🤖 Bot polling loop started...")
     last_update_id = 0
+    
     while True:
         try:
             updates = get_updates(last_update_id + 1)
             for update in updates:
                 process_update(update)
-                last_update_id = update["update_id"]
+                # Update the offset to avoid reprocessing
+                if update.get("update_id", 0) > last_update_id:
+                    last_update_id = update["update_id"]
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
+        
         time.sleep(1)
 
+# --- Main Execution ---
 if __name__ == "__main__":
-    logger.info("🚀 Starting Shift Bot...")
+    logger.info("🚀 Starting Shift Bot with Health Check...")
+    
+    # Start web server in background thread
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    
+    # Wait for web server to initialize
+    time.sleep(2)
+    logger.info(f"✅ Health check available at /health")
+    
+    # Start the bot
     run_bot()
