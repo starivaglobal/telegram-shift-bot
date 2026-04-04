@@ -3,9 +3,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 import requests
-import threading
-import time
-from flask import Flask
+from flask import Flask, request, jsonify
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,20 +20,9 @@ DATA_FILE = "shifts.json"
 PROCESSED_UPDATES = set()
 MAX_PROCESSED_SIZE = 1000
 
-# --- Flask Health Check Server ---
+# --- Flask App for Webhook and Health Check ---
 app = Flask(__name__)
 
-@app.route('/')
-@app.route('/health')
-@app.route('/healthcheck')
-def health():
-    return "OK", 200
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
-# --- Bot Functions ---
 def load_data():
     try:
         with open(DATA_FILE, 'r') as f:
@@ -66,18 +53,6 @@ def send_message(chat_id, text):
         requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
     except Exception as e:
         logger.error(f"Error sending message: {e}")
-
-def get_updates(offset=None):
-    url = f"{BASE_URL}/getUpdates"
-    params = {"timeout": 25}
-    if offset:
-        params["offset"] = offset
-    try:
-        response = requests.get(url, params=params, timeout=30)
-        return response.json().get("result", [])
-    except Exception as e:
-        logger.error(f"Error getting updates: {e}")
-        return []
 
 def handle_start(chat_id, user_name):
     welcome = f"""👋 Здравствуйте, {user_name}!
@@ -192,20 +167,15 @@ def handle_cancel(chat_id, args, user):
 
 def process_update(update):
     try:
-        # Get unique update ID
         update_id = update.get("update_id")
         
-        # Check if we already processed this update
+        # Check for duplicate
         if update_id in PROCESSED_UPDATES:
             logger.info(f"Skipping duplicate update {update_id}")
             return
         
-        # Mark as processed
         PROCESSED_UPDATES.add(update_id)
-        
-        # Keep the set from growing too large
         if len(PROCESSED_UPDATES) > MAX_PROCESSED_SIZE:
-            # Remove oldest 200 entries
             to_remove = list(PROCESSED_UPDATES)[:200]
             for old_id in to_remove:
                 PROCESSED_UPDATES.discard(old_id)
@@ -241,34 +211,58 @@ def process_update(update):
     except Exception as e:
         logger.error(f"Error processing update: {e}")
 
-def run_bot():
-    logger.info("🤖 Bot polling loop started...")
-    last_update_id = 0
-    
-    while True:
-        try:
-            updates = get_updates(last_update_id + 1)
-            for update in updates:
-                process_update(update)
-                # Update the offset to avoid reprocessing
-                if update.get("update_id", 0) > last_update_id:
-                    last_update_id = update["update_id"]
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}")
-        
-        time.sleep(1)
+# --- Webhook Endpoint ---
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming Telegram updates"""
+    try:
+        update = request.get_json()
+        if update:
+            process_update(update)
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"status": "error"}), 500
 
-# --- Main Execution ---
+# --- Health Check Endpoints ---
+@app.route('/')
+@app.route('/health')
+@app.route('/healthcheck')
+def health():
+    return "OK", 200
+
+# --- Set Webhook on Startup ---
+def set_webhook():
+    """Register webhook with Telegram"""
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        logger.error("RENDER_EXTERNAL_URL not set")
+        return False
+    
+    webhook_url = f"{render_url}/webhook"
+    url = f"{BASE_URL}/setWebhook"
+    
+    try:
+        response = requests.post(url, json={"url": webhook_url})
+        result = response.json()
+        if result.get("ok"):
+            logger.info(f"✅ Webhook set to {webhook_url}")
+            return True
+        else:
+            logger.error(f"Failed to set webhook: {result}")
+            return False
+    except Exception as e:
+        logger.error(f"Error setting webhook: {e}")
+        return False
+
+# --- Main ---
 if __name__ == "__main__":
-    logger.info("🚀 Starting Shift Bot with Health Check...")
+    logger.info("🚀 Starting Shift Bot with Webhook...")
     
-    # Start web server in background thread
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
+    # Set webhook on startup
+    set_webhook()
     
-    # Wait for web server to initialize
-    time.sleep(2)
-    logger.info(f"✅ Health check available at /health")
-    
-    # Start the bot
-    run_bot()
+    # Start Flask server
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"✅ Server starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
