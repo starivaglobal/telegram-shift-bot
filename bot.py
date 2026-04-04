@@ -3,41 +3,19 @@ import json
 import logging
 from datetime import datetime, timedelta
 import requests
-import threading
 import time
-from flask import Flask
 
-# --- Configuration ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
-    logger.error("NO TOKEN FOUND! Make sure TELEGRAM_BOT_TOKEN is set in Render environment variables.")
+    logger.error("NO TOKEN FOUND!")
     exit(1)
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 DATA_FILE = "shifts.json"
 
-# --- Flask Web Server for Health Checks ---
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-@flask_app.route('/health')
-@flask_app.route('/healthcheck')
-@flask_app.route('/ping')
-def health_check():
-    """Health check endpoint for Render and UptimeRobot"""
-    return "OK", 200
-
-def run_web_server():
-    """Starts the Flask web server in a separate thread"""
-    port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting Flask web server on port {port}")
-    # Run Flask with debug=False and without the reloader to avoid issues
-    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
-# --- Bot Logic (Your Existing Functions) ---
 def load_data():
     try:
         with open(DATA_FILE, 'r') as f:
@@ -86,21 +64,21 @@ def handle_start(chat_id, user_name):
 
 Добро пожаловать в бот управления сменами.
 
-📅 **Доступные команды:**
-/week - Посмотреть расписание на неделю
+📅 Доступные команды:
+/week - Расписание на неделю
 /shift ГГГГ-ММ-ДД 1 - Первая смена (9:30-16:30)
 /shift ГГГГ-ММ-ДД 2 - Вторая смена (16:00-23:00)
 /my_shifts - Мои смены
 /cancel ГГГГ-ММ-ДД 1|2 - Отменить запись
 
-📌 Пример: /shift 2026-05-01 1"""
+Пример: /shift 2026-05-01 1"""
     send_message(chat_id, welcome)
 
 def handle_week(chat_id):
     data = load_data()
     today = datetime.now().date()
     weekdays_ru = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    msg = "📅 **Расписание смен на следующую неделю:**\n\n"
+    msg = "📅 Расписание смен на следующую неделю:\n\n"
     
     for i in range(7):
         date = today + timedelta(days=i)
@@ -110,7 +88,7 @@ def handle_week(chat_id):
         
         first = ', '.join(shifts['first']) if shifts['first'] else "— Никто не записан —"
         second = ', '.join(shifts['second']) if shifts['second'] else "— Никто не записан —"
-        msg += f"*{weekday} ({date_str})*\n🌅 Первая смена: {first}\n🌙 Вторая смена: {second}\n\n"
+        msg += f"{weekday} ({date_str})\n🌅 Первая смена: {first}\n🌙 Вторая смена: {second}\n\n"
     
     send_message(chat_id, msg)
 
@@ -170,7 +148,7 @@ def handle_my_shifts(chat_id, user):
             pass
     
     if my_list:
-        send_message(chat_id, "📋 **Ваши смены:**\n\n" + "\n".join(my_list))
+        send_message(chat_id, "📋 Ваши смены:\n\n" + "\n".join(my_list))
     else:
         send_message(chat_id, "📋 У вас нет запланированных смен.")
 
@@ -218,7 +196,7 @@ def process_update(update):
         elif command == "/cancel":
             handle_cancel(chat_id, args, user)
         else:
-            send_message(chat_id, "❌ Неизвестная команда. Используйте /help")
+            send_message(chat_id, "❌ Неизвестная команда.")
     except Exception as e:
         logger.error(f"Error processing update: {e}")
 
@@ -235,17 +213,6 @@ def run_bot():
             logger.error(f"Error in main loop: {e}")
         time.sleep(1)
 
-# --- Main Execution ---
 if __name__ == "__main__":
-    logger.info("🚀 Starting Shift Bot with Health Check Server...")
-    
-    # 1. Start the Flask web server in a background thread
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    
-    # 2. Wait a moment for the web server to initialize
-    time.sleep(2)
-    logger.info(f"✅ Health check available at: https://telegram-shift-bot.onrender.com/health")
-    
-    # 3. Start the bot's polling loop (this runs forever)
+    logger.info("🚀 Starting Shift Bot...")
     run_bot()
