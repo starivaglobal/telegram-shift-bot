@@ -18,16 +18,20 @@ if not TOKEN:
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 DATA_FILE = "shifts.json"
 
-# Flask app for health check
+# Create Flask app for health check
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
+@flask_app.route('/health')
 @flask_app.route('/healthcheck')
 def health_check():
+    """Health check endpoint for Render and UptimeRobot"""
     return "OK", 200
 
 def run_web_server():
+    """Run Flask web server in a separate thread"""
     port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Starting web server on port {port}")
     flask_app.run(host='0.0.0.0', port=port)
 
 def load_data():
@@ -59,6 +63,7 @@ def get_display_name(user):
         return str(user_id)
 
 def send_message(chat_id, text):
+    """Send a message to a Telegram user"""
     url = f"{BASE_URL}/sendMessage"
     data = {"chat_id": chat_id, "text": text}
     try:
@@ -67,6 +72,7 @@ def send_message(chat_id, text):
         logger.error(f"Error sending message: {e}")
 
 def get_updates(offset=None):
+    """Get new updates from Telegram"""
     url = f"{BASE_URL}/getUpdates"
     params = {"timeout": 30}
     if offset:
@@ -90,7 +96,7 @@ def handle_start(chat_id, user_name):
 /my_shifts - Мои смены
 /cancel ГГГГ-ММ-ДД 1|2 - Отменить запись
 
-📌 Пример: /shift 2026-04-28 1
+📌 Пример: /shift 2026-05-01 1
 
 Хорошего дня! ☀️"""
     send_message(chat_id, welcome)
@@ -123,16 +129,14 @@ def handle_week(chat_id):
 
 def handle_shift(chat_id, args, user):
     if len(args) != 2:
-        send_message(chat_id, "📝 Использование: /shift ГГГГ-ММ-ДД 1|2\n\nПример: /shift 2026-04-28 1")
+        send_message(chat_id, "📝 Использование: /shift ГГГГ-ММ-ДД 1|2\n\nПример: /shift 2026-05-01 1")
         return
     
     date_str = args[0]
     shift_num = args[1]
     
-    # Get display name from user object
     display_name = get_display_name(user)
     
-    # Validate date
     try:
         shift_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         if shift_date < datetime.now().date():
@@ -142,10 +146,9 @@ def handle_shift(chat_id, args, user):
             send_message(chat_id, "❌ Записывайтесь только на следующую неделю (максимум 7 дней вперёд)!")
             return
     except ValueError:
-        send_message(chat_id, "❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД\n\nПример: /shift 2026-04-28 1")
+        send_message(chat_id, "❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД\n\nПример: /shift 2026-05-01 1")
         return
     
-    # Validate shift number
     if shift_num not in ["1", "2"]:
         send_message(chat_id, "❌ Смена должна быть 1 (первая) или 2 (вторая)")
         return
@@ -190,7 +193,7 @@ def handle_my_shifts(chat_id, user):
 
 def handle_cancel(chat_id, args, user):
     if len(args) != 2:
-        send_message(chat_id, "📝 Использование: /cancel ГГГГ-ММ-ДД 1|2\n\nПример: /cancel 2026-04-28 1")
+        send_message(chat_id, "📝 Использование: /cancel ГГГГ-ММ-ДД 1|2\n\nПример: /cancel 2026-05-01 1")
         return
     
     date_str = args[0]
@@ -219,11 +222,11 @@ def handle_help(chat_id):
 /cancel ГГГГ-ММ-ДД 1|2 - Отменить запись на смену
 /help - Показать эту справку
 
-📌 **Формат даты:** ГГГГ-ММ-ДД (например, 2026-04-28)
+📌 **Формат даты:** ГГГГ-ММ-ДД (например, 2026-05-01)
 
 Примеры:
-/shift 2026-04-28 1 - Запись на первую смену 28 апреля
-/cancel 2026-04-28 1 - Отмена с первой смены 28 апреля"""
+/shift 2026-05-01 1 - Запись на первую смену 1 мая
+/cancel 2026-05-01 1 - Отмена с первой смены 1 мая"""
     
     send_message(chat_id, help_text)
 
@@ -236,7 +239,6 @@ def process_update(update):
         chat_id = message["chat"]["id"]
         text = message.get("text", "")
         
-        # Get the full user object
         user = message.get("from", {})
         user_name = user.get("first_name", "")
         
@@ -265,6 +267,7 @@ def process_update(update):
         logger.error(f"Error processing update: {e}")
 
 def run_bot():
+    """Run the bot's polling loop"""
     logger.info("🤖 Starting bot polling loop...")
     last_update_id = 0
     
@@ -280,15 +283,16 @@ def run_bot():
         time.sleep(1)
 
 def main():
+    """Main function - starts both web server and bot"""
     logger.info("🤖 Starting shift bot with HTTP server...")
     
-    # Start web server in background thread
+    # Start Flask web server in a background thread
     web_thread = threading.Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
     logger.info(f"✅ HTTP server started on port {os.environ.get('PORT', 10000)}")
     
-    # Run bot (this blocks)
+    # Run bot (this blocks the main thread)
     run_bot()
 
 if __name__ == "__main__":
