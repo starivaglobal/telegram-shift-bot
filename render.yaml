@@ -4,6 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    healthCheckPath: /healthcheck   # <-- ADD THIS LINE
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false

@@ -222,4 +222,45 @@ def main():
         time.sleep(1)
 
 if __name__ == "__main__":
+# Add these imports at the top of your file if they aren't there
+import threading
+from flask import Flask
+
+# ... (your existing bot functions like handle_start, handle_week, etc. stay here) ...
+
+# 1. Create a simple Flask web server for Render's health check
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+@flask_app.route('/healthcheck')
+def health_check():
+    return "OK", 200
+
+def run_web_server():
+    """Starts the web server on the port Render expects"""
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
+
+# 2. Modify your main() function to start BOTH the bot AND the web server
+def main():
+    # Start the web server in a background thread
+    web_thread = threading.Thread(target=run_web_server)
+    web_thread.daemon = True
+    web_thread.start()
+    
+    # Start your bot's polling loop (this will block the main thread)
+    logger.info("🤖 Bot and Health Check Server are running...")
+    
+    last_update_id = 0
+    while True:
+        try:
+            updates = get_updates(last_update_id + 1)
+            for update in updates:
+                process_update(update)
+                last_update_id = update["update_id"]
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+        time.sleep(1)
+
+if __name__ == "__main__":
     main()
