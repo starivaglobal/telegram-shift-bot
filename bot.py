@@ -3,6 +3,9 @@ import json
 import logging
 from datetime import datetime, timedelta
 import requests
+import threading
+import time
+from flask import Flask
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,6 +17,18 @@ if not TOKEN:
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 DATA_FILE = "shifts.json"
+
+# Flask app for health check
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+@flask_app.route('/healthcheck')
+def health_check():
+    return "OK", 200
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
 
 def load_data():
     try:
@@ -27,7 +42,6 @@ def save_data(data):
         json.dump(data, f)
 
 def send_message(chat_id, text):
-    """Send a message to a user"""
     url = f"{BASE_URL}/sendMessage"
     data = {"chat_id": chat_id, "text": text}
     try:
@@ -36,7 +50,6 @@ def send_message(chat_id, text):
         logger.error(f"Error sending message: {e}")
 
 def get_updates(offset=None):
-    """Get new updates from Telegram"""
     url = f"{BASE_URL}/getUpdates"
     params = {"timeout": 30}
     if offset:
@@ -94,7 +107,6 @@ def handle_shift(chat_id, args, username):
     date_str = args[0]
     shift_num = args[1]
     
-    # Validate date
     try:
         shift_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         if shift_date < datetime.now().date():
@@ -168,10 +180,9 @@ def handle_cancel(chat_id, args, username):
         shift_name = "первой смены" if shift_num == "1" else "второй смены"
         send_message(chat_id, f"✅ Вы отменены от {shift_name} на {date_str}")
     else:
-        send_message(chat_id, "❌ Вы не записаны на эту смену!")
+        send_message(chat_id, "❌ Вы не записаны на эту смену")
 
 def process_update(update):
-    """Process a single update from Telegram"""
     try:
         message = update.get("message")
         if not message:
@@ -204,9 +215,8 @@ def process_update(update):
     except Exception as e:
         logger.error(f"Error processing update: {e}")
 
-def main():
-    logger.info("🤖 Starting shift bot (direct API mode)...")
-    
+def run_bot():
+    logger.info("🤖 Starting bot polling loop...")
     last_update_id = 0
     
     while True:
@@ -218,49 +228,19 @@ def main():
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
         
-        import time
         time.sleep(1)
 
-if __name__ == "__main__":
-# Add these imports at the top of your file if they aren't there
-import threading
-from flask import Flask
-
-# ... (your existing bot functions like handle_start, handle_week, etc. stay here) ...
-
-# 1. Create a simple Flask web server for Render's health check
-flask_app = Flask(__name__)
-
-@flask_app.route('/')
-@flask_app.route('/healthcheck')
-def health_check():
-    return "OK", 200
-
-def run_web_server():
-    """Starts the web server on the port Render expects"""
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host='0.0.0.0', port=port)
-
-# 2. Modify your main() function to start BOTH the bot AND the web server
 def main():
-    # Start the web server in a background thread
+    logger.info("🤖 Starting shift bot with HTTP server...")
+    
+    # Start web server in background thread
     web_thread = threading.Thread(target=run_web_server)
     web_thread.daemon = True
     web_thread.start()
+    logger.info(f"✅ HTTP server started on port {os.environ.get('PORT', 10000)}")
     
-    # Start your bot's polling loop (this will block the main thread)
-    logger.info("🤖 Bot and Health Check Server are running...")
-    
-    last_update_id = 0
-    while True:
-        try:
-            updates = get_updates(last_update_id + 1)
-            for update in updates:
-                process_update(update)
-                last_update_id = update["update_id"]
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}")
-        time.sleep(1)
+    # Run bot (this blocks)
+    run_bot()
 
 if __name__ == "__main__":
     main()
